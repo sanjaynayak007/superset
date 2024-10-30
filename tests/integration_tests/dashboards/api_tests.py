@@ -3025,7 +3025,24 @@ class TestDashboardApi(ApiOwnersTestCaseMixin, InsertChartMixin, SupersetTestCas
         return self.client.get(uri)
 
     @pytest.mark.usefixtures("create_dashboard_with_tag")
-    def test_cache_dashboard_screenshot_success(self):
+    @patch("superset.dashboards.api.is_feature_enabled")
+    def test_async_cache_dashboard_screenshot_success(self, is_feature_enabled):
+        # DASHBOARD_ASYNC_SCREENSHOT_GENERATION feature flag to True
+        is_feature_enabled.return_value = True
+        self.login(ADMIN_USERNAME)
+        dashboard = (
+            db.session.query(Dashboard)
+            .filter(Dashboard.dashboard_title == "dash with tag")
+            .first()
+        )
+        response = self._cache_screenshot(dashboard.id)
+        assert response.status_code == 202
+
+    @pytest.mark.usefixtures("create_dashboard_with_tag")
+    @patch("superset.dashboards.api.is_feature_enabled")
+    def test_sync_cache_dashboard_screenshot_success(self, is_feature_enabled):
+        # DASHBOARD_ASYNC_SCREENSHOT_GENERATION feature flag to True
+        is_feature_enabled.return_value = False
         self.login(ADMIN_USERNAME)
         dashboard = (
             db.session.query(Dashboard)

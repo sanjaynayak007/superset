@@ -17,6 +17,7 @@
 # pylint: disable=too-many-lines
 import functools
 import logging
+import threading
 from datetime import datetime
 from io import BytesIO
 from typing import Any, Callable, cast, Optional
@@ -1056,7 +1057,7 @@ class DashboardRestApi(BaseSupersetModelRestApi):
         f".cache_dashboard_screenshot",
         log_to_statsd=False,
     )
-    def cache_dashboard_screenshot(self, pk: int, **kwargs: Any) -> WerkzeugResponse:
+    def cache_dashboard_screenshot(self, pk: int, **kwargs: Any) -> WerkzeugResponse:  # pylint: disable=too-many-locals
         """Compute and cache a screenshot.
         ---
         post:
@@ -1121,30 +1122,38 @@ class DashboardRestApi(BaseSupersetModelRestApi):
             "DashboardRestApi.screenshot", pk=dashboard.id, digest=cache_key
         )
 
-        def trigger_celery() -> WerkzeugResponse:
-            logger.info("Triggering screenshot ASYNC")
-            cache_dashboard_screenshot.delay(
-                username=get_current_user(),
-                guest_token=(
-                    g.user.guest_token
-                    if get_current_user() and isinstance(g.user, GuestUser)
-                    else None
-                ),
-                dashboard_id=dashboard.id,
-                dashboard_url=dashboard_url,
-                cache_key=cache_key,
-                force=True,
-                thumb_size=thumb_size,
-                window_size=window_size,
-            )
-            return self.response(
-                202,
-                cache_key=cache_key,
-                dashboard_url=dashboard_url,
-                image_url=image_url,
-            )
+        screenshot_kwargs = {
+            "username": get_current_user(),
+            "guest_token": (
+                g.user.guest_token
+                if get_current_user() and isinstance(g.user, GuestUser)
+                else None
+            ),
+            "dashboard_id": dashboard.id,
+            "dashboard_url": dashboard_url,
+            "cache_key": cache_key,
+            "force": True,
+            "thumb_size": thumb_size,
+            "window_size": window_size,
+        }
 
-        return trigger_celery()
+        def generate_screenshot() -> None:
+            cache_dashboard_screenshot(**screenshot_kwargs)
+
+        if is_feature_enabled("DASHBOARD_ASYNC_SCREENSHOT_GENERATION"):
+            logger.info("Triggering screenshot ASYNC")
+            cache_dashboard_screenshot.delay(**screenshot_kwargs)
+        else:
+            logger.info("Triggering screenshot SYNC")
+            thread = threading.Thread(target=generate_screenshot)
+            thread.start()
+
+        return self.response(
+            202,
+            cache_key=cache_key,
+            dashboard_url=dashboard_url,
+            image_url=image_url,
+        )
 
     @expose("/<pk>/screenshot/<digest>/", methods=("GET",))
     @protect()
